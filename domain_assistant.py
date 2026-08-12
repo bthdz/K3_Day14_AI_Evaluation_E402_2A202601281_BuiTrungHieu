@@ -244,25 +244,55 @@ class TextGenerator(Protocol):
 
 class OpenAIGenerator:
     def __init__(self, max_output_tokens: int = 300) -> None:
-        api_key = os.getenv("OPENAI_API_KEY", "").strip()
-        self.model = os.getenv("OPENAI_MODEL", "").strip()
-        if not api_key:
-            raise RuntimeError("OPENAI_API_KEY is missing from .env")
-        if not self.model:
-            raise RuntimeError("OPENAI_MODEL is missing from .env")
-        self.client = OpenAI(api_key=api_key)
+        self.api_key = os.getenv("OPENAI_API_KEY", "").strip()
+        self.model = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip()
+        
+        self.nvidia_api_key = os.getenv("NVIDIA_API_KEY", "").strip()
+        
+        if not self.api_key and not self.nvidia_api_key:
+            raise RuntimeError("OPENAI_API_KEY or NVIDIA_API_KEY is missing from .env")
+            
+        self.client = OpenAI(api_key=self.api_key) if self.api_key else None
+        
+        if self.nvidia_api_key:
+            self.nvidia_client = OpenAI(
+                base_url="https://integrate.api.nvidia.com/v1",
+                api_key=self.nvidia_api_key
+            )
+        else:
+            self.nvidia_client = None
+            
         self.max_output_tokens = max_output_tokens
 
     def generate(self, prompt: str) -> str:
-        response = self.client.responses.create(
-            model=self.model,
-            input=prompt,
-            temperature=0,
-            max_output_tokens=self.max_output_tokens,
-        )
-        answer = response.output_text.strip()
+        try:
+            if not self.client:
+                raise OpenAIError("No OpenAI API key")
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0,
+                max_tokens=self.max_output_tokens,
+            )
+            content = response.choices[0].message.content
+            answer = content.strip() if content else ""
+        except Exception as e:
+            if self.nvidia_client:
+                # Fallback to NVIDIA
+                nvidia_model = os.getenv("NVIDIA_MODEL", "meta/llama-3.1-70b-instruct")
+                response = self.nvidia_client.chat.completions.create(
+                    model=nvidia_model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0,
+                    max_tokens=self.max_output_tokens,
+                )
+                content = response.choices[0].message.content
+                answer = content.strip() if content else ""
+            else:
+                raise e
+        
         if not answer:
-            raise RuntimeError("OpenAI returned an empty answer")
+            return "API returned an empty answer or the response was blocked."
         return answer
 
 
